@@ -10,7 +10,6 @@ output: pdf_document
 knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(brms)
-library(skimr)
 library(plyr)
 library(broom.mixed)
 library(ggmcmc)
@@ -18,6 +17,7 @@ library(coda)
 library(bayesplot)
 library(modelr)
 library(tidybayes)
+library(gtools)
 ```
 
 ```{r data}
@@ -44,12 +44,13 @@ data <- data %>%
 
 data$dwelling_ownership <- as.numeric(revalue(data$dwelling_ownership, c("Owned" = 1, "Rented" = 0)))
 
+## Take a look at the categorical levels
 #levels_income <- levels(data$family_income)
 #levels_edu <- levels(data$highest_education)
 #levels_age <- levels(data$age_group)
 #levels_province <- levels(data$province)
 
-# Plot age group distribution
+## Plot age group distribution
 # page <- ggplot(data = data, mapping = aes(x = age_group)) +
 #   theme_light() +
 #   geom_bar(position = "dodge", mapping = aes(y = ..prop.., group = 1)) +
@@ -59,13 +60,13 @@ data$dwelling_ownership <- as.numeric(revalue(data$dwelling_ownership, c("Owned"
 #        caption = "Data: 2017 General Social Survey, Cycle 31: Families, Feburary 2020.")
 # page
 
-## Convert categorical values to numeric for Stan
+## Convert categorical variables to numeric for Stan
 #data$age_group <- unclass(data$age_group)
 #data$highest_education <- unclass(data$highest_education)
 #data$family_income <- unclass(data$family_income)
 #data$province <- unclass(data$province)
-
 ```
+
 ```{r postdata, include=FALSE}
 # Now create the poststratification data
 
@@ -89,66 +90,66 @@ strat_data <- strat_data %>%
          ) %>% 
   select(Province, Population, Male_under20, Male_29, Male_39, Male_65, Male_over65, Female_under20, Female_29, Female_39, Female_65, Female_over65)
 
-# Create the data
-
+# Creat the dataframe for post-stratification, we first extract the variables of interest
 age <-  c(rep(c("under 20", "21-29", "30-39", "40-65", "over 65"),length(levels(data$province))*2))
 
 province <-c(rep(levels(data$province), each = 10))
 
 male <- rep(c(rep(1,5),rep(0,5)),10)
 
-female_Alberta <- strat_data %>% 
+count_Alberta <- strat_data %>% 
   filter(Province == "Alberta") %>% 
   select(-Province,
          -Population)
-female_BC <- strat_data %>% 
+count_BC <- strat_data %>% 
   filter(Province == "British Columbia") %>% 
   select(-Province,
          -Population)
-female_Manitoba <- strat_data %>% 
+count_Manitoba <- strat_data %>% 
   filter(Province == "Manitoba") %>% 
   select(-Province,
          -Population)
-female_NB <- strat_data %>% 
+count_NB <- strat_data %>% 
   filter(Province == "New Brunswick") %>% 
   select(-Province,
          -Population)
-female_NL <- strat_data %>% 
+count_NL <- strat_data %>% 
   filter(Province == "Newfoundland and Labrador") %>% 
   select(-Province,
          -Population)
-female_NS <- strat_data %>% 
+count_NS <- strat_data %>% 
   filter(Province == "Nova Scotia") %>% 
   select(-Province,
          -Population)
-female_ON <- strat_data %>% 
+count_ON <- strat_data %>% 
   filter(Province == "Ontario") %>% 
   select(-Province,
          -Population)
-female_PEI <- strat_data %>% 
+count_PEI <- strat_data %>% 
   filter(Province == "Prince Edward Island") %>% 
   select(-Province,
          -Population)
-female_QC <- strat_data %>% 
+count_QC <- strat_data %>% 
   filter(Province == "Quebec") %>% 
   select(-Province,
          -Population)
-female_Saskatchewan <- strat_data %>% 
+count_Saskatchewan <- strat_data %>% 
   filter(Province == "Saskatchewan") %>% 
   select(-Province,
          -Population)
 
-count = c(t(female_Alberta), t(female_BC), t(female_Manitoba), t(female_NB), t(female_NL), t(female_NS), t(female_ON), t(female_PEI), t(female_QC), t(female_Saskatchewan))
+count = c(t(count_Alberta), t(count_BC), t(count_Manitoba), t(count_NB), t(count_NL), t(count_NS), t(count_ON), t(count_PEI), t(count_QC), t(count_Saskatchewan))
 
+# Create the dataframe
 poststrat <- as_tibble(cbind(province,age,male, c(count)))
 
+# Convert to appropariate variable types
 poststrat <- poststrat %>% 
   mutate(province = as.factor(province),
          age_group = as.factor(age),
          N = as.numeric(V4),
          male = as.numeric(male)) %>% 
   select(province, age_group, male, N)
-
 ```
 
 
@@ -161,28 +162,46 @@ Data description and where the data came from. The fact it was a opt-in survey..
 
 # 3. Model
 
-We are interested in explaining whether a person own a house based on age, gender and province of residence. Let $y_{i} = 1$ if the respondent owns a house (or any kind of dwelling). The model is as the following:
+We are interested in explaining whether a person owns a house based on age, gender and province of residence. Let $y_{i} = 1$ if the respondent owns a house (or any kinds of dwelling). The model is as the following:
 
-$$Pr(y_i = 1) = \mbox{logit}^{-1}\left(\alpha^{age}_{a[i]} + \alpha^{gender}_{g[i]} + \alpha^{province}_{p[i]} + \epsilon\right) $$
+$$Pr(y_i = 1) = \mbox{logit}^{-1}\left(\beta_{0}+\alpha^{age}_{a[i]} + \alpha^{male}_{m[i]} + \alpha^{province}_{p[i]} + \epsilon\right) $$
 
-The notation $a[i]$ refers to the age-group $a$ to which individual $i$ belongs. There are $5$ age groups in total: under 20, 21-29, 30-39, 40-65, and over 65. The notation $g[i]$ refers to the gender $g$ of individual $i$. Similarly, $p[i]$ refers to the province individual $i$ resides. These are modeled as:
-$$\alpha^{age}_a \sim N(0, \sigma_{age})\mbox{ for }a = 1, 2, \ldots, A$$
-where $A$ is the total number of age-groups. .... Talk about the other ones also....
-$$\epsilon \sim N(0, \sigma_{y}^{2}) $$
-where the $\alpha$ are age-group, gender, province of residence, highest education level, family income, and marital status respectively. The notation $a[i]$ refers to the age-group $a$ to which individual $i$ belongs. Similarly, the notation $g[i]$ refers to the gender-group $g$ to which individual $i$ belongs. province, education, income marital These are modeled as:
-$$\alpha^{age}_a \sim N(0, \sigma_{age})\mbox{ for }a = 1, 2, \ldots, A$$
-where $A$ is the total number of age-groups. .... Talk about the other ones also....
+ $\beta_{0}$ is the global intercept. The notation $a[i]$ refers to the age-group $a$ to which individual $i$ belongs. There are $5$ age groups in total: under 20, 21-29, 30-39, 40-65, and over 65. The notation $m[i]$ refers whether individual $i$ is male. Similarly, $p[i]$ refers to the province individual $i$ resides. The priors for these variables are:
+ 
+$$\beta_0 \sim N(0, 2)$$
+$$\alpha^{age}_a \sim N(0, 2)\mbox{ for }a = 1, 2, \ldots, 6$$
+The notation $a = 1, 2,\ldots, 6$ represents the age group of each individual.
+$$\alpha^{male}_m \sim N(0, 2)\mbox{ for }m = 1, 0$$
+$m = 1$ when the individual is male, $m = 0$ when the individual is female.
 
-```{r}
+$$\alpha^{province}_p \sim N(0, 2)\mbox{ for }p = 1, 2, \ldots, 10$$
+The notation $p = 1, 2,\ldots, 10$ represents the province of residency for each individual.
+
+$$\epsilon \sim t(3, 0, 2.5) $$
+The error term $\epsilon$ has been modeled as following a student t-distribution.
+
+The priors for fixed effects are all $Normal(0,2)$ on $logit$ scale, which means that most of the samples are from about $0.018 - 0.98$ on a natural probability scale.
+
+We chose weakly informative priors for two reasons: first of all, we do not have strong assumptions; secondly, we know that the probability must be greater than $0$ and smaller than $1$. By setting weakly informative priors, we hope that the data could tune the posterior distribution as efficiently as possible.
+
+## Model Checking
+
+
+```{r model}
 options(mc.cores = parallel::detectCores())
 ## A more Comprehensive model created for pleasure, will not be discussion in this essay
 #formula <- dwelling_ownership ~ male + highest_education + (1|age_group) + province + family_income 
-#model <- brm(formula = formula, data = data,family = bernoulli(link = "logit"), chains = 4, cores = 4, control = list(adapt_delta=.99), prior = set_prior("normal(0,3)", class = "b"),seed = 1992)
+#model <- brm(formula = formula, data = data,family = bernoulli(link = "logit"), chains = 4, cores = 4, control = list(adapt_delta=.99), prior = set_prior("normal(0,2)", class = "b"),seed = 1992)
 
 # Create a model
 formula1 <- dwelling_ownership ~ male + (1|age_group) + province 
-model1 <- brm(formula = formula1, data = data,family = bernoulli(link = "logit"), chains = 4, cores = 4, control = list(adapt_delta=.99), prior = c(prior(normal(0,3), class = Intercept), prior(normal(0,5), class = b)),seed = 1992)
+model1 <- brm(formula = formula1, data = data,family = bernoulli(link = "logit"), chains = 4, cores = 4, control = list(adapt_delta=.99), prior = c(prior(normal(0,2), class = Intercept), prior(normal(0,2), class = b)),sample_prior = TRUE, seed = 1992)
+prior_summary(model1)
+```
 
+Let's do some model checking. Firstly, we do convergence diagnostic to make sure that the MCMC sampling size is big enough. The results of Gelman-Rubin diagnostic shows that the upper confidence limits are either $1$ or very close to $1$, which indicates that the sample chains are converging. It does not flag an issue.
+
+```{r convergencediag}
 # Convergence diagnostic, we use Gelman-Rubin Diagnostic, if Upper CI is close to 1, samples converge
 model1tranformed <- ggs(model1) 
 modelposterior <- as.mcmc(model1) 
@@ -192,6 +211,11 @@ gelman.diag(modelposterior)
 mcmc_plot(model1, type = "trace")
 
 mcmc_plot(model1, type = "dens")
+
+#plot(hypothesis(model1, "provinceManitoba = 1"))
+```
+
+```{r confusionmatrix}
 # The plot shows no evidence of autocorrelation for all model variables in both chains, as the autocorrelation parameters all quickly diminish to around zero.
 #mcmc_plot(model1, type = "acf_bar")
 
@@ -200,17 +224,19 @@ Pred_check <- predict(model1, type = "response")
 Pred_check <- if_else(Pred_check[,1] > 0.5, 1, 0)
 ConfusionMatrix <- table(Pred_check, pull(data, dwelling_ownership)) #`pull` results in a vector
 #correct classification rate
-sum(diag(ConfusionMatrix))/sum(ConfusionMatrix)
+ccr<- sum(diag(ConfusionMatrix))/sum(ConfusionMatrix)
 
 # Confusion Matrix 
-ConfusionMatrix
+colnames(ConfusionMatrix) <- c("Predicated: Rent a House", "Predicated: Own a House")
+rownames(ConfusionMatrix) <- c("Actual: Rent a House", "Actual: Own a House")
+knitr:: kable(ConfusionMatrix)
+```
 
-# Results
-broom.mixed::tidy(model1)
-# The estimates is on log scale, use inverse logit function to get the probability estimates
-inv.logit(fixef(model1)[,-2])
+The correct classification rate of the model is `r ccr`. The Confusion Matrix of the model is shown in the table. The model tends to exaggerate the rent rate. 
 
+Before proceed to do post-stratification, one more model check is needed. A posterior predictive check is necessary. In the plot, $y$ represents the observed data, $y_{rep}$ refers to a randomly sample from the posterior distribution. The plot shows that the posterior density is consistent with the observed data.
 
+```{r predictivecheck}
 # Set seed
 set.seed(1992)
 
@@ -218,18 +244,21 @@ set.seed(1992)
 N <- nrow(data)
 
 # Draw a random sample from the full dataset
-data_sub <- data[sample(nrow(data),N),]
+#data_sub <- data[sample(nrow(data),N),]
 
 # Prediction
 pred_model <- posterior_predict(model1, nsamples = 500)
 pred_model[is.na(pred_model)] <- mean(pred_model,na.rm = TRUE)
 
 
-#Prior predictive check, plot the distribution of observed data vs. 50 simulated datasets. 
+#Posterior predictive check, plot the distribution of observed data vs. 50 simulated datasets. 
 samp <- sample(nrow(pred_model), 100)
 color_scheme_set("teal")
 ppc_dens_overlay(data$dwelling_ownership, pred_model[samp, ])
+```
 
+The we do post-stratification based on the age, gender and province. The census data used is from the 2016 Census cycle. The plot shows that the model does a fair job.  
+```{r post-stratification}
 # Post-stratification, estimation in the population
 # Draw a stratified sample
 
@@ -251,20 +280,32 @@ ppc_dens_overlay(data$dwelling_ownership, Pop[samp, ])
 
 # 4. Results
 
-```{r}
 
-# Plot the posterior predictive distribution using sampled population datasets vs. observed data
-samp <- sample(nrow(Pop), 100)
-color_scheme_set("teal")
-ppc_dens_overlay(data$dwelling_ownership, Pop[samp, ])
-plot(inv.logit())
+The model estimates and credibel intervals are shown in the table.
+```{r result}
+# Results
+# The estimates is on log scale, use inverse logit function to get the probability estimates
+results <- inv.logit(fixef(model1)[,-2])
+colnames(results) <- c("Estimate", "2.5%", "97.5%")
+rownames(results) <- c("Intercept", "Male", "British Columbia", "Manitoba", "New Brunswick", "Newfoundland and Labrador", "Nova Scotia", "Ontario", "Prince Edward Island", "Quebec", "Saskatchewan")
+knitr::kable(results, digits = 3)
+
 ```
+
+
+
+
+
+
+
 # 5. Discussions
 
 ## 5.1 Weaknesses and Next Steps
-no people living in  were sampled.
-sex groups only contain female and male 
-not feasible bc not known in the population
+An obvious flaw is that no people living in the Territories were sampled in the survey. Indeed there is only less than 0.5% of the Canadian population living in the Territories. However, a comprehensive could provide valuable information about people living in remote regions. The lives in the Territories would be very different from those in the provinces as one can imagine. 
+
+Another drawback is that the gender groups only have the female and the male as options. It can not precisely reflect the demographic reality in the country. Therefore, making population predictions requires great caution. 
+
+The last one is about the analysis. Only gender, age group, and the province of residency were included in the model and post-stratification. Some variables, such as education levels, family income, and marital status, are left out of consideration because we do not have population information. A more comprehensive post-stratification matrix will benefit future studies. Besides, expert knowledge in the relevant field will help identify confounding variables and improve model performance. 
 
 
 
